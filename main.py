@@ -72,7 +72,11 @@ async def on_shutdown(app):
     pcs.clear()
 
 
-if __name__ == "__main__":
+import local_server
+local_server.start()
+
+
+if False:
     parser = argparse.ArgumentParser(description="WebRTC webcam demo")
     parser.add_argument("--cert-file", help="SSL certificate file (for HTTPS)")
     parser.add_argument("--key-file", help="SSL key file (for HTTPS)")
