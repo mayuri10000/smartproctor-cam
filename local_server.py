@@ -74,7 +74,7 @@ async def login(request):
     res = web.Response(
         content_type="application/json",
         text=json.dumps(
-            {"success": proctor_client.login(params['userName'], params['password'])}
+            {"success": proctor_client.login(params['token'])}
         ),
     )
     add_cors_header(res)

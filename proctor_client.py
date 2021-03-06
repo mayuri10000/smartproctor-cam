@@ -18,9 +18,9 @@ hub_url = f"ws://{server}/hub"
 auth_cookie = None
 
 
-async def login(uid, password):
+async def login(token):
     global auth_cookie
-    params = {'userName': uid, 'password': password}
+    params = {'token': token}
     res = http_session.post(f"https://{server}/User/DeepLensLogin", data=json.dumps(params))
     o = json.loads(await res.text())
     if o['code'] != 0:
