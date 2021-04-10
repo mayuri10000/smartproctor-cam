@@ -6,13 +6,6 @@ import socket
 import shlex
 import os
 
-import OpenSSL.crypto
-from Crypto.Util import asn1
-from Crypto.Hash import SHA256
-from flask import jsonify
-from cryptography.fernet import Fernet
-
-import jsonschema
 
 BIOS_VERSION_PATH = '/sys/class/dmi/id/bios_version'
 
@@ -83,7 +76,8 @@ def get_network_status():
         if len(words) < 2:
             continue
 
-        if words[1].find('wireless') > -1 and words[2] == 'mlan0':
+        # device name is wlp3s0 on linux PCs and mlan0 on DeepLens
+        if words[1].find('wireless') > -1 and words[2] == 'wlp3s0':
             status['wifi'] = words[0]
         if words[1].find('ethernet') > -1:
             status['ethernet'] = True

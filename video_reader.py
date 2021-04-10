@@ -10,6 +10,7 @@ from aiortc.mediastreams import MediaStreamTrack, MediaStreamError
 # This is the FIFO pipe that outputs the raw frames of the camera capture
 DEEPLENS_VIDEO_FIFO_NAME = "/opt/awscam/out/ch1_out.h264"
 
+
 class DeepLensVideoTrack(MediaStreamTrack):
     def __init__(self, player, kind):
         super().__init__()
@@ -48,6 +49,7 @@ class DeepLensVideoTrack(MediaStreamTrack):
             self._player.stop(self)
             self._player = None
 
+
 def player_worker(
     loop, container, streams, video_track, quit_event
 ):
@@ -64,7 +66,6 @@ def player_worker(
         if frame.key_frame == 1 or video_track.queue.qsize() <= 5:
             frame.pts = frame.index * 24
             asyncio.run_coroutine_threadsafe(video_track.queue.put(frame), loop)
-
 
 
 class DeepLensVideoReader:
@@ -85,7 +86,6 @@ class DeepLensVideoReader:
             if stream.type == "video" and not self.__video:
                 self.__video = DeepLensVideoTrack(self, kind="video")
                 self.__streams.append(stream)
-
 
     @property
     def video(self) -> MediaStreamTrack:

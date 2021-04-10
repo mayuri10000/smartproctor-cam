@@ -17,6 +17,7 @@ from aiortc.contrib.media import MediaPlayer
 from video_reader import DeepLensVideoReader
 
 ROOT = os.path.dirname(__file__)
+CERT_DIR = 'certs/'
 
 
 def add_cors_header(response):
@@ -46,12 +47,12 @@ async def wifi_ssids(request):
     return res
 
 
-async def connect_wifi(request):
-    params = await request.json()
+async def connect_wifi(request: web.Request):
+    params = request.query
     res = web.Response(
         content_type="application/json",
         text=json.dumps(
-            {'success': utils.connect_wifi(params['name'], params['password'])}
+            {'success': utils.connect_wifi(params['ssid'], params['password'])}
         ),
     )
     add_cors_header(res)
@@ -70,11 +71,14 @@ async def network_status(request):
 
 
 async def login(request):
-    params = await request.json()
+    params = request.query
+    login_res = await proctor_client.login(params['token'], params['eid'])
+    if login_res:
+        await proctor_client.init_exam()
     res = web.Response(
         content_type="application/json",
         text=json.dumps(
-            {"success": proctor_client.login(params['token'])}
+            {"success": login_res}
         ),
     )
     add_cors_header(res)
@@ -88,9 +92,13 @@ def on_shutdown():
 def start():
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
-    app.router.add_post("/login", login)
+    app.router.add_get("/login", login)
     app.router.add_get('/network_status', network_status)
-    app.router.add_post('/connect_wifi', connect_wifi)
+    app.router.add_get('/connect_wifi', connect_wifi)
     app.router.add_get('/wifi_ssids', wifi_ssids)
     app.router.add_get('/sn', serial_number)
-    web.run_app(app, host="0.0.0.0", port=8080)
+
+    ssl_context = ssl.SSLContext()
+    ssl_context.load_cert_chain(CERT_DIR + 'fullchain.pem', CERT_DIR + 'privkey.pem')
+
+    web.run_app(app, host="0.0.0.0", port=8080, ssl_context=ssl_context)
