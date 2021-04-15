@@ -12,10 +12,6 @@ import proctor_client
 
 from aiohttp import web
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
-from aiortc.contrib.media import MediaPlayer
-from video_reader import DeepLensVideoReader
-
 ROOT = os.path.dirname(__file__)
 CERT_DIR = 'certs/'
 
@@ -102,3 +98,7 @@ def start():
     ssl_context.load_cert_chain(CERT_DIR + 'fullchain.pem', CERT_DIR + 'privkey.pem')
 
     web.run_app(app, host="0.0.0.0", port=8080, ssl_context=ssl_context)
+
+
+if __name__ == '__main__':
+    start()

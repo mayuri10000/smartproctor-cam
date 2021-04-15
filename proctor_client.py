@@ -1,12 +1,14 @@
-import logging
-
-import time
+import threading
 import aiortc
 import aiohttp
 import json
+
+from aiortc import RTCSessionDescription
+from aiortc.rtcicetransport import *
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 
 from video_reader import DeepLensVideoReader
+from inference import infinite_infer_run, set_message_callback, stop_inference
 
 reader = DeepLensVideoReader()
 proctor_connections = {}
@@ -20,6 +22,13 @@ hub_url = f"wss://{server_name}/hub"
 
 auth_cookie = None
 exam_id = 0
+
+inference_thread = None
+
+
+def send_detect_event(message):
+    if signalr_conn:
+        signalr_conn.send("TestTakerMessage", [str(exam_id), 'warning', message])
 
 
 async def login(token, eid):
@@ -35,54 +44,86 @@ async def login(token, eid):
     return True
 
 
+def init_inference():
+    global inference_thread
+    set_message_callback(send_detect_event)
+    inference_thread = threading.Thread(target=infinite_infer_run)
+    inference_thread.start()
+
+
 async def init_signalr():
     global signalr_conn, proctor_connections
+    if signalr_conn is not None:
+        signalr_conn.stop()
+
     signalr_conn = HubConnectionBuilder().with_url(hub_url, options=
-    {'headers': {'Cookies': auth_cookie}, 'verify_ssl': False}) \
-        .configure_logging(logging.DEBUG) \
+    {'headers': {'Cookie': auth_cookie}, 'verify_ssl': False}) \
+        .configure_logging(logging.DEBUG)\
+        .with_automatic_reconnect({
+            "type": "raw",
+            "keep_alive_interval": 10,
+            "reconnect_interval": 5,
+            "max_attempts": 5
+         })\
         .build()
 
-    signalr_conn.on_error = lambda error: print("Error! " + error)
-    signalr_conn.on_disconnect = lambda: print("Disconnected")
+    def camera_answer_from_taker(args):
+        sdp = RTCSessionDescription(sdp=args[0]['sdp'], type=args[0]['type'])
+        print("Get SDP answer from test taker")
+        asyncio.run(test_taker_connection.setRemoteDescription(sdp))
 
-    async def camera_answer_from_taker(sdp):
-        await test_taker_connection.setRemoteDescription(sdp)
+    def camera_answer_from_proctor(args):
+        print("Get SDP answer from proctor " + args[0])
+        sdp = RTCSessionDescription(sdp=args[1]['sdp'], type=args[1]['type'])
+        asyncio.run(proctor_connections[args[0]].setRemoteDescription(sdp))
 
-    async def camera_answer_from_proctor(proctor, sdp):
-        await proctor_connections[proctor].setRemoteDescription(sdp)
+    def camera_ice_candidate_from_taker(args):
+        print("Get ICE candidate from test taker")
+        loop = asyncio.get_event_loop()
+        candidate = Candidate.from_sdp()
+        loop.run_in_executor(None, test_taker_connection.addIceCandidate, sdp)
 
-    async def camera_ice_candidate_from_taker(candidate):
-        await test_taker_connection.addIceCandidate(candidate)
+    def camera_ice_candidate_from_proctor(args):
+        proctor_connections[args[0]].addIceCandidate(args[1])
 
-    async def camera_ice_candidate_from_proctor(proctor, candidate):
-        await proctor_connections[proctor].addIceCandidate(candidate)
+    def exam_ended(_):
+        shutdown()
 
-    async def test_back(uid):
-        print(uid)
+    # def test_back(args):
+    #     print("TestBack" + args[0])
 
     signalr_conn.on("CameraAnswerFromTaker", camera_answer_from_taker)
     signalr_conn.on("CameraAnswerFromProctor", camera_answer_from_proctor)
-    signalr_conn.on("CameraIceCandidateFromTaker", camera_ice_candidate_from_taker)
-    signalr_conn.on("CameraIceCandidateFromProctor", camera_ice_candidate_from_proctor)
-    signalr_conn.on("TestBack", lambda uid: print(uid))
-
+    # signalr_conn.on("CameraIceCandidateFromTaker", camera_ice_candidate_from_taker)
+    # signalr_conn.on("CameraIceCandidateFromProctor", camera_ice_candidate_from_proctor)
+    signalr_conn.on("ExamEnded", exam_ended)
     signalr_conn.start()
-    time.sleep(5)
-    signalr_conn.send("Test", [])
 
 
 async def init_webrtc(proctors):
+    global test_taker_connection, proctor_connections
+
+    # if there is previous instances, clear them
+    if test_taker_connection is not None:
+        await test_taker_connection.close()
+        test_taker_connection = aiortc.RTCPeerConnection()
+    if len(proctor_connections) > 0:
+        for key in proctor_connections:
+            await proctor_connections[key].close()
+        proctor_connections = {}
+    stop_inference()
+
     test_taker_connection.addTrack(reader.video)
     taker_sdp = await test_taker_connection.createOffer()
-    # signalr_conn.send("CameraOfferToTaker", [taker_sdp])
+    signalr_conn.send("CameraOfferToTaker", [taker_sdp])
     await test_taker_connection.setLocalDescription(taker_sdp)
 
     for proctor in proctors:
         conn = aiortc.RTCPeerConnection()
         conn.addTrack(reader.video)
-        proctor_connections[proctor] = conn
+        proctor_connections[proctor['id']] = conn
         sdp = await conn.createOffer()
-        # signalr_conn.send("CameraOfferToProctor", [proctor, sdp])
+        signalr_conn.send("CameraOfferToProctor", [proctor['id'], sdp])
         await conn.setLocalDescription(sdp)
 
 
@@ -93,6 +134,7 @@ async def init_exam():
         proctors = o['proctors']
         await init_signalr()
         await init_webrtc(proctors)
+        init_inference()
 
 
 def shutdown():
@@ -100,4 +142,5 @@ def shutdown():
     for proctor in proctor_connections.keys():
         proctor_connections[proctor].close()
 
+    stop_inference()
     signalr_conn.stop()

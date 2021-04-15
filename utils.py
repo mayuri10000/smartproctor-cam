@@ -77,7 +77,7 @@ def get_network_status():
             continue
 
         # device name is wlp3s0 on linux PCs and mlan0 on DeepLens
-        if words[1].find('wireless') > -1 and words[2] == 'wlp3s0':
+        if words[1].find('wireless') > -1 and words[2] == 'mlan0':
             status['wifi'] = words[0]
         if words[1].find('ethernet') > -1:
             status['ethernet'] = True
