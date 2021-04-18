@@ -63,8 +63,8 @@ def player_worker(
         # we should decode and send every key frames
         # and also make sure there is not to much frames in the queue
         # as this will lead to memory leak
-        if frame.key_frame == 1 or video_track.queue.qsize() <= 5:
-            frame.pts = frame.index * 24
+        if frame.key_frame == 1 or video_track.queue.qsize() <= 1:
+            frame.pts = frame.index * 48
             asyncio.run_coroutine_threadsafe(video_track.queue.put(frame), loop)
 
 

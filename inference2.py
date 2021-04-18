@@ -5,6 +5,7 @@ import json
 import numpy as np
 import awscam
 import cv2
+import time
 
 
 class LocalDisplay(Thread):
@@ -68,27 +69,78 @@ class LocalDisplay(Thread):
         self.stop_request.set()
 
 
+# The model used in the project is pre-trained with the COCO dataset
+# The labels in the COCO dataset can be found in
+# https://github.com/ActiveState/gococo/blob/master/labels.txt
+PERSON_LABEL = 1
+TV_LABEL = 72
+LAPTOP_LABEL = 73
+CELLPHONE_LABEL = 77
+BOOK_LABEL = 84
+
+# We have different threshold for different objects since the
+# model's accuracy varies with the object detected
+PERSON_THRESHOLD = 0.5
+TV_LAPTOP_THRESHOLD = 0.5
+CELLPHONE_THRESHOLD = 0.01
+BOOK_THRESHOLD = 0.2
+
+# Errors could occur during detection, but normally they will not occur in many continuous frames
+# We count the occurrences of different situations and detect whether the count exceeds a threshold
+# Also, the number of frames where the previously detected situation discontinues, when the count exceeds
+# a limit, we regard the previous situation as ended
+no_person_num = 0
+no_person_max = 10
+no_person_discontinue = 0
+no_person_discontinue_max = 10
+multi_person_num = 0
+multi_person_max = 10
+multi_person_discontinue = 0
+multi_person_discontinue_max = 10
+multi_monitor_num = 0
+multi_monitor_max = 10
+multi_monitor_discontinue = 0
+multi_monitor_discontinue_max = 10
+cellphone_num = 0
+cellphone_max = 3
+cellphone_discontinue = 0
+cellphone_discontinue_max = 10
+book_num = 0
+book_max = 3
+book_discontinue = 0
+book_discontinue_max = 10
+
+
+def save_image(frame, boxes, text):
+    cv2.putText(frame, text, (0, 30), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
+    for box in boxes:
+        xmin, xmax, ymin, ymax, score = box
+        # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+        # for more information about the cv2.rectangle method.
+        # Method signature: image, point1, point2, color, and tickness.
+        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (255, 165, 20), 10)
+        # Amount to offset the label/probability text above the bounding box.
+        text_offset = 15
+        # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+        # for more information about the cv2.putText method.
+        # Method signature: image, text, origin, font face, font scale, color,
+        # and tickness
+        cv2.putText(frame, "{:.2f}%".format(score * 100),
+                    (xmin, ymin - text_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
+    cv2.imwrite('/home/aws_cam/detection/' + str(int(time.time())) + ".jpg", frame)
+
+
 def infinite_infer_run():
+    global no_person_num, no_person_discontinue, multi_person_num, \
+        multi_person_discontinue, cellphone_num, cellphone_discontinue, \
+        book_num, book_discontinue, multi_monitor_num, multi_monitor_discontinue
     """ Entry point of the lambda function"""
     try:
         # This object detection model is implemented as single shot detector (ssd), since
         # the number of labels is small we create a dictionary that will help us convert
         # the machine labels to human readable labels.
         model_type = 'ssd'
-
-        output_map = ['', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
-                      'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
-                      'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep',
-                      'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella',
-                      'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
-                      'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard',
-                      'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork',
-                      'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-                      'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
-                      'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
-                      'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
-                      'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
-                      'scissors', 'teddy bear', 'hair drier', 'toothbrush']
 
         # Create a local display instance that will dump the image bytes to a FIFO
         # file that the image can be rendered locally.
@@ -99,10 +151,9 @@ def infinite_infer_run():
         model_path = '/home/aws_cam/public/ssd_mobilenet_v2_coco/FP16/ssd_mobilenet_v2_coco.xml'
         # Load the model onto the GPU.
         print('Loading object detection model')
+        start = time.time()
         model = awscam.Model(model_path, {'GPU': 1})
-        print('Object detection model loaded')
-        # Set the threshold for detection
-        detection_threshold = 0.25
+        print('Object detection model loaded, Elapsed: ' + str(time.time() - start))
         # The height and width of the training set images
         input_height = 300
         input_width = 300
@@ -113,6 +164,7 @@ def infinite_infer_run():
             if not ret:
                 raise Exception('Failed to get frame from the stream')
             # Resize frame to the same size as the training set.
+            start = time.time()
             frame_resize = cv2.resize(frame, (input_height, input_width))
             # Run the images through the inference engine and parse the results using
             # the parser API, note it is possible to get the output of doInference
@@ -120,40 +172,128 @@ def infinite_infer_run():
             # a simple API is provided.
             parsed_inference_results = model.parseResult(model_type,
                                                          model.doInference(frame_resize))
+            elapsed = time.time() - start
             # Compute the scale in order to draw bounding boxes on the full resolution
             # image.
             yscale = float(frame.shape[0]) / float(input_height)
             xscale = float(frame.shape[1]) / float(input_width)
-            # Dictionary to be filled with labels and probabilities for MQTT
-            cloud_output = {}
+
+            persons = []
+            monitors = []
+            cellphones = []
+            books = []
             # Get the detected objects and probabilities
             for obj in parsed_inference_results[model_type]:
-                if obj['prob'] > detection_threshold:
-                    # Add bounding boxes to full resolution frame
-                    xmin = int(xscale * obj['xmin'])
-                    ymin = int(yscale * obj['ymin'])
-                    xmax = int(xscale * obj['xmax'])
-                    ymax = int(yscale * obj['ymax'])
-                    # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
-                    # for more information about the cv2.rectangle method.
-                    # Method signature: image, point1, point2, color, and tickness.
-                    cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (255, 165, 20), 10)
-                    # Amount to offset the label/probability text above the bounding box.
-                    text_offset = 15
-                    # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
-                    # for more information about the cv2.putText method.
-                    # Method signature: image, text, origin, font face, font scale, color,
-                    # and tickness
-                    cv2.putText(frame, "{}: {:.2f}%".format(obj['label'],
-                                                            obj['prob'] * 100),
-                                (xmin, ymin - text_offset),
-                                cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
-                    # Store label and probability to send to cloud
-                    cloud_output[obj['label']] = obj['prob']
+                # Add bounding boxes to full resolution frame
+                xmin = int(xscale * obj['xmin'])
+                ymin = int(yscale * obj['ymin'])
+                xmax = int(xscale * obj['xmax'])
+                ymax = int(yscale * obj['ymax'])
+
+                if obj['label'] == PERSON_LABEL and obj['prob'] > PERSON_THRESHOLD:
+                    persons.append((xmin, xmax, ymin, ymax, obj['prob']))
+                elif (obj['label'] == TV_LABEL or obj['label'] == LAPTOP_LABEL) and obj['prob'] > TV_LAPTOP_THRESHOLD:
+                    monitors.append((xmin, xmax, ymin, ymax, obj['prob']))
+                elif obj['label'] == CELLPHONE_LABEL and obj['prob'] > CELLPHONE_THRESHOLD:
+                    cellphones.append((xmin, xmax, ymin, ymax, obj['prob']))
+                elif obj['label'] == BOOK_LABEL and obj['prob'] > BOOK_THRESHOLD:
+                    books.append((xmin, xmax, ymin, ymax, obj['prob']))
+
+            if len(persons) < 1:
+                no_person_num += 1
+                no_person_discontinue = 0
+            elif no_person_num > 0:
+                no_person_discontinue += 1
+
+            if no_person_discontinue == no_person_discontinue_max:
+                no_person_num = 0
+                no_person_discontinue = 0
+
+            if len(persons) > 1:
+                multi_person_num += 1
+                multi_person_discontinue = 0
+            elif multi_person_num > 0:
+                multi_person_discontinue += 1
+
+            if multi_person_discontinue == multi_person_discontinue_max:
+                multi_person_num = 0
+                multi_person_discontinue = 0
+
+            if len(monitors) > 1:
+                multi_monitor_num += 1
+                multi_monitor_discontinue = 0
+            elif multi_monitor_num > 0:
+                multi_monitor_discontinue += 1
+
+            if multi_monitor_discontinue == multi_monitor_discontinue_max:
+                multi_monitor_num = 0
+                multi_monitor_discontinue = 0
+
+            if len(cellphones) > 0:
+                cellphone_num += 1
+                cellphone_discontinue = 0
+            elif cellphone_num > 0:
+                cellphone_discontinue += 1
+
+            if cellphone_discontinue == cellphone_discontinue_max:
+                cellphone_num = 0
+                cellphone_discontinue = 0
+
+            if len(books) > 1:
+                book_num += 1
+                book_discontinue = 0
+            elif book_num > 0:
+                book_discontinue += 1
+
+            if book_discontinue == book_discontinue_max:
+                book_num = 0
+                book_discontinue = 0
+
+            if no_person_num == no_person_max:
+                print('Exam taker left')
+                save_image(frame, persons, 'Exam taker left')
+                no_person_num += 1
+
+            if multi_person_num == multi_person_max:
+                print('multiple people detected')
+                save_image(frame, persons, 'multiple people detected')
+                multi_person_num += 1
+
+            if multi_monitor_num == multi_monitor_max:
+                print('multiple PC monitors/laptops detected')
+                save_image(frame, monitors, 'multiple PC monitors/laptops detected')
+                multi_monitor_num += 1
+
+            if cellphone_num == cellphone_max:
+                print('cellphone detected')
+                save_image(frame, cellphones, 'cellphone detected')
+                cellphone_num += 1
+
+            if book_num == book_max:
+                print('book detected')
+                save_image(frame, books, 'book detected')
+                book_num += 1
+
+                # # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+                # # for more information about the cv2.rectangle method.
+                # # Method signature: image, point1, point2, color, and tickness.
+                # cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (255, 165, 20), 10)
+                # # Amount to offset the label/probability text above the bounding box.
+                # text_offset = 15
+                # # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+                # # for more information about the cv2.putText method.
+                # # Method signature: image, text, origin, font face, font scale, color,
+                # # and tickness
+                # cv2.putText(frame, "{}: {:.2f}%".format(obj['label'],
+                #                                        obj['prob'] * 100),
+                #            (xmin, ymin - text_offset),
+                #            cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
+                # # Store label and probability to send to cloud
+                # cloud_output[obj['label']] = obj['prob']
             # Set the next frame in the local display stream.
-            local_display.set_frame_data(frame)
+            # local_display.set_frame_data(frame)
             # Send results to the cloud
-            print(json.dumps(cloud_output))
+            # print(json.dumps(cloud_output) + "Elapsed: " + str(elapsed))
     except Exception as ex:
         print('Error in object detection lambda: {}'.format(ex))
 
