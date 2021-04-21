@@ -7,7 +7,7 @@ import platform
 import ssl
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from video_reader import DeepLensVideoReader
+import video_reader
 
 ROOT = os.path.dirname(__file__)
 
@@ -36,11 +36,10 @@ async def offer(request):
             pcs.discard(pc)
     # open media source
 
-    player = DeepLensVideoReader()
     await pc.setRemoteDescription(offer)
     for t in pc.getTransceivers():
-        if t.kind == "video" and player.video:
-            pc.addTrack(player.video)
+        if t.kind == "video":
+            pc.addTrack(video_reader.DeepLensVideoTrack())
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     return web.Response(
@@ -80,6 +79,7 @@ if __name__ == "__main__":
         ssl_context = ssl.SSLContext()
         ssl_context.load_cert_chain(args.cert_file, args.key_file)
     else:
+
         ssl_context = None
     app = web.Application()
     app.on_shutdown.append(on_shutdown)

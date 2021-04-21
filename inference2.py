@@ -6,6 +6,7 @@ import numpy as np
 import awscam
 import cv2
 import time
+from datetime import datetime
 
 
 class LocalDisplay(Thread):
@@ -82,8 +83,8 @@ BOOK_LABEL = 84
 # model's accuracy varies with the object detected
 PERSON_THRESHOLD = 0.5
 TV_LAPTOP_THRESHOLD = 0.5
-CELLPHONE_THRESHOLD = 0.01
-BOOK_THRESHOLD = 0.2
+CELLPHONE_THRESHOLD = 0.1
+BOOK_THRESHOLD = 0.4
 
 # Errors could occur during detection, but normally they will not occur in many continuous frames
 # We count the occurrences of different situations and detect whether the count exceeds a threshold
@@ -94,9 +95,9 @@ no_person_max = 10
 no_person_discontinue = 0
 no_person_discontinue_max = 10
 multi_person_num = 0
-multi_person_max = 10
+multi_person_max = 20
 multi_person_discontinue = 0
-multi_person_discontinue_max = 10
+multi_person_discontinue_max = 20
 multi_monitor_num = 0
 multi_monitor_max = 10
 multi_monitor_discontinue = 0
@@ -112,13 +113,14 @@ book_discontinue_max = 10
 
 
 def save_image(frame, boxes, text):
-    cv2.putText(frame, text, (0, 30), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
+    cv2.putText(frame, text, (0, 60), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
+    cv2.putText(frame, str(datetime.now()), (0, 130), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
     for box in boxes:
         xmin, xmax, ymin, ymax, score = box
         # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
         # for more information about the cv2.rectangle method.
         # Method signature: image, point1, point2, color, and tickness.
-        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (255, 165, 20), 10)
+        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 0, 255), 10)
         # Amount to offset the label/probability text above the bounding box.
         text_offset = 15
         # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
@@ -127,7 +129,7 @@ def save_image(frame, boxes, text):
         # and tickness
         cv2.putText(frame, "{:.2f}%".format(score * 100),
                     (xmin, ymin - text_offset),
-                    cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
     cv2.imwrite('/home/aws_cam/detection/' + str(int(time.time())) + ".jpg", frame)
 
 
@@ -273,27 +275,6 @@ def infinite_infer_run():
                 print('book detected')
                 save_image(frame, books, 'book detected')
                 book_num += 1
-
-                # # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
-                # # for more information about the cv2.rectangle method.
-                # # Method signature: image, point1, point2, color, and tickness.
-                # cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (255, 165, 20), 10)
-                # # Amount to offset the label/probability text above the bounding box.
-                # text_offset = 15
-                # # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
-                # # for more information about the cv2.putText method.
-                # # Method signature: image, text, origin, font face, font scale, color,
-                # # and tickness
-                # cv2.putText(frame, "{}: {:.2f}%".format(obj['label'],
-                #                                        obj['prob'] * 100),
-                #            (xmin, ymin - text_offset),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 165, 20), 6)
-                # # Store label and probability to send to cloud
-                # cloud_output[obj['label']] = obj['prob']
-            # Set the next frame in the local display stream.
-            # local_display.set_frame_data(frame)
-            # Send results to the cloud
-            # print(json.dumps(cloud_output) + "Elapsed: " + str(elapsed))
     except Exception as ex:
         print('Error in object detection lambda: {}'.format(ex))
 
