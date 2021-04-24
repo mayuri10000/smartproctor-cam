@@ -7,10 +7,10 @@ from aiortc import RTCSessionDescription
 from aiortc.rtcicetransport import *
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 
-from video_reader import DeepLensVideoReader
+from video_reader import DeepLensVideoTrack
 from inference import infinite_infer_run, set_message_callback, stop_inference
 
-reader = DeepLensVideoReader()
+
 proctor_connections = {}
 test_taker_connection = aiortc.RTCPeerConnection()
 signalr_conn = None
@@ -29,6 +29,15 @@ inference_thread = None
 def send_detect_event(message):
     if signalr_conn:
         signalr_conn.send("TestTakerMessage", [str(exam_id), 'warning', message])
+
+
+async def upload_detection_image(data):
+    res = await http_session.post(f"https://{server_name}/api/exam/UploadDetection/", data, verify_ssl=False)
+    o = json.loads(await res.text())
+    if o['code'] != 0:
+        return None
+    file_name = o['fileName']
+    return file_name
 
 
 async def login(token, eid):
@@ -77,11 +86,11 @@ async def init_signalr():
         sdp = RTCSessionDescription(sdp=args[1]['sdp'], type=args[1]['type'])
         asyncio.run(proctor_connections[args[0]].setRemoteDescription(sdp))
 
-    def camera_ice_candidate_from_taker(args):
-        print("Get ICE candidate from test taker")
-        loop = asyncio.get_event_loop()
-        candidate = Candidate.from_sdp()
-        loop.run_in_executor(None, test_taker_connection.addIceCandidate, sdp)
+    #def camera_ice_candidate_from_taker(args):
+    #    print("Get ICE candidate from test taker")
+    #    loop = asyncio.get_event_loop()
+    #    candidate = Candidate.from_sdp()
+    #    loop.run_in_executor(None, test_taker_connection.addIceCandidate, sdp)
 
     def camera_ice_candidate_from_proctor(args):
         proctor_connections[args[0]].addIceCandidate(args[1])
@@ -113,14 +122,14 @@ async def init_webrtc(proctors):
         proctor_connections = {}
     stop_inference()
 
-    test_taker_connection.addTrack(reader.video)
+    test_taker_connection.addTrack(DeepLensVideoTrack())
     taker_sdp = await test_taker_connection.createOffer()
     signalr_conn.send("CameraOfferToTaker", [taker_sdp])
     await test_taker_connection.setLocalDescription(taker_sdp)
 
     for proctor in proctors:
         conn = aiortc.RTCPeerConnection()
-        conn.addTrack(reader.video)
+        conn.addTrack(DeepLensVideoTrack())
         proctor_connections[proctor['id']] = conn
         sdp = await conn.createOffer()
         signalr_conn.send("CameraOfferToProctor", [proctor['id'], sdp])

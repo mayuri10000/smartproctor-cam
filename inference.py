@@ -1,10 +1,3 @@
-# *****************************************************
-#                                                    *
-# Copyright 2018 Amazon.com, Inc. or its affiliates. *
-# All Rights Reserved.                               *
-#                                                    *
-# *****************************************************
-""" A sample lambda for object detection"""
 import math
 from threading import Thread, Event
 import os
@@ -14,138 +7,192 @@ import awscam
 import cv2
 import time
 
-import mxnet as mx
-from gluoncv import model_zoo, data, utils
-from gluoncv.data.transforms.pose import detector_to_simple_pose, heatmap_to_coord
+from video_reader import get_video_worker
 
 
-CLASSES = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
-           'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
-           'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep',
-           'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella',
-           'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
-           'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard',
-           'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork',
-           'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-           'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
-           'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
-           'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
-           'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
-           'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+# The model used in the project is pre-trained with the COCO dataset
+# The labels in the COCO dataset can be found in
+# https://github.com/ActiveState/gococo/blob/master/labels.txt
+PERSON_LABEL = 1
+TV_LABEL = 72
+LAPTOP_LABEL = 73
+CELLPHONE_LABEL = 77
+BOOK_LABEL = 84
+
+# We have different threshold for different objects since the
+# model's accuracy varies with the object detected
+PERSON_THRESHOLD = 0.5
+TV_LAPTOP_THRESHOLD = 0.5
+CELLPHONE_THRESHOLD = 0.1
+BOOK_THRESHOLD = 0.4
+
+# Errors could occur during detection, but normally they will not occur in many continuous frames
+# We count the occurrences of different situations and detect whether the count exceeds a threshold
+# Also, the number of frames where the previously detected situation discontinues, when the count exceeds
+# a limit, we regard the previous situation as ended
+no_person_max = 10
+no_person_discontinue_max = 10
+multi_person_max = 20
+multi_person_discontinue_max = 20
+multi_monitor_max = 10
+multi_monitor_discontinue_max = 10
+cellphone_max = 3
+cellphone_discontinue_max = 10
+book_max = 3
+book_discontinue_max = 10
+
+# The path to the optimized model, should be in /opt/awscam/artifacts/ when deployed
+model_path = '/home/aws_cam/public/ssd_mobilenet_v2_coco/FP16/ssd_mobilenet_v2_coco.xml'
+model_type = 'ssd'
+input_height = 300
+input_width = 300
 
 
-__message_callback = lambda msg: print(msg)
-__should_stop = False
+class InferenceWorker(Thread):
+    """ Worker thread that do the object detection inference."""
+    def __init__(self, message_callback=print):
+        super().__init__()
+        self.no_person_count = 0
+        self.no_person_discontinue = 0
+        self.multi_person_count = 0
+        self.multi_person_discontinue = 0
+        self.multi_monitor_count = 0
+        self.multi_monitor_discontinue = 0
+        self.cellphone_count = 0
+        self.cellphone_discontinue = 0
+        self.book_count = 0
+        self.book_discontinue = 0
+        self.model = None
+        self.video_worker = get_video_worker()
+        self.stop_request = Event()
+        self.message_callback = message_callback
+        self.yscale = 0
+        self.xscale = 0
 
+    def run(self):
+        # Load the optimized object detection model
+        self.model = awscam.Model(model_path, {'GPU': 1})
+        # Start the video worker if not started
+        if not self.video_worker.is_alive():
+            self.video_worker.start()
+        while not self.stop_request.isSet():
+            # We do not use awscam.getLastFrame since have multiple consumer of the video FIFO
+            # will make the video output corrupt. the VideoWorker instance should be singleton.
+            frame = self.video_worker.get_frame()
+            if frame is None:
+                continue
 
-def set_message_callback(callback):
-    global __message_callback
-    __message_callback = callback
+            frame_resize = cv2.resize(frame, (input_height, input_width))
+            # Process the frame data with the object detection model and parse the result with
+            # the AWS DeepLens' builtin API.
+            result = self.model.parseResult(model_type, self.model.doInference(frame_resize))
+            self.yscale = float(frame.shape[0]) / float(input_height)
+            self.xscale = float(frame.shape[1]) / float(input_width)
+            self.process_result(result)
 
+    def process_result(self, result):
+        persons = []
+        monitors = []
+        cellphones = []
+        books = []
+        # Get the detected objects and probabilities
+        for obj in result[model_type]:
+            # Add bounding boxes to full resolution frame
+            xmin = int(self.xscale * obj['xmin'])
+            ymin = int(self.yscale * obj['ymin'])
+            xmax = int(self.xscale * obj['xmax'])
+            ymax = int(self.yscale * obj['ymax'])
 
-def stop_inference():
-    global __should_stop
-    __should_stop = True
+            if obj['label'] == PERSON_LABEL and obj['prob'] > PERSON_THRESHOLD:
+                persons.append((xmin, xmax, ymin, ymax, obj['prob']))
+            elif (obj['label'] == TV_LABEL or obj['label'] == LAPTOP_LABEL) and obj['prob'] > TV_LAPTOP_THRESHOLD:
+                monitors.append((xmin, xmax, ymin, ymax, obj['prob']))
+            elif obj['label'] == CELLPHONE_LABEL and obj['prob'] > CELLPHONE_THRESHOLD:
+                cellphones.append((xmin, xmax, ymin, ymax, obj['prob']))
+            elif obj['label'] == BOOK_LABEL and obj['prob'] > BOOK_THRESHOLD:
+                books.append((xmin, xmax, ymin, ymax, obj['prob']))
 
+        if len(persons) < 1:
+            self.no_person_count += 1
+            self.no_person_discontinue = 0
+        elif self.no_person_count > 0:
+            self.no_person_discontinue += 1
 
-def infinite_infer_run():
-    global __should_stop
-    # currently the model is slow since it is not optimized.
-    # so these events will be triggered if detected in one frame.
-    # But we should detect in more than one frame since error could occur in certain frames
-    multiple_monitors_num = 0
-    multiple_monitors_max = 2
-    no_person_num = 0
-    no_person_max = 2
-    multiple_person_num = 0
-    multiple_person_max = 2
-    cellphones_num = 0
-    cellphones_max = 1
-    book_num = 0
-    book_max = 1
+        if self.no_person_discontinue == no_person_discontinue_max:
+            self.no_person_count = 0
+            self.no_person_discontinue = 0
 
-    __should_stop = False
-    """ Entry point of the lambda function"""
-    try:
-        detector = model_zoo.get_model('yolo3_mobilenet1.0_coco', pretrained=True)
-        print("Model loaded, start inferencing")
-        while not __should_stop:
-            ret, frame = awscam.getLastFrame()
-            if not ret:
-                raise Exception("Failed to get frame from the stream")
-            img = mx.nd.array(frame)
-            x, img = data.transforms.presets.ssd.transform_test(img, short=256)
-            class_IDs, scores, bounding_boxs = detector(x)
-            persons = []
-            cellphones = []
-            monitors = []
-            books = []
+        if len(persons) > 1:
+            self.multi_person_count += 1
+            self.multi_person_discontinue = 0
+        elif self.multi_person_count > 0:
+            self.multi_person_discontinue += 1
 
-            mx.nd.waitall()
-            for x in range(len(class_IDs[0])):
-                if scores[0][x] > 0.2:
-                    class_name = CLASSES[int(class_IDs[0][x].asscalar())]
-                    if class_name == 'person':
-                        persons.append({
-                            'bounding_box': bounding_boxs[0][x]
-                        })
-                    elif class_name == 'tv' or class_name == 'laptop':
-                        monitors.append({
-                            'bounding_box': bounding_boxs[0][x]
-                        })
-                    elif class_name == 'cell phone':
-                        cellphones.append({
-                            'bounding_box': bounding_boxs[0][x]
-                        })
-                    elif class_name == 'book':
-                        books.append({
-                            'bounding_box': bounding_boxs[0][x]
-                        })
+        if self.multi_person_discontinue == multi_person_discontinue_max:
+            self.multi_person_count = 0
+            self.multi_person_discontinue = 0
 
-            if len(persons) == 0:
-                no_person_num += 1
-            else:
-                no_person_num = 0
+        if len(monitors) > 1:
+            self.multi_monitor_count += 1
+            self.multi_monitor_discontinue = 0
+        elif self.multi_monitor_count > 0:
+            self.multi_monitor_discontinue += 1
 
-            if len(persons) > 1:
-                multiple_person_num += 1
-            else:
-                multiple_person_num = 0
+        if self.multi_monitor_discontinue == multi_monitor_discontinue_max:
+            self.multi_monitor_count = 0
+            self.multi_monitor_discontinue = 0
 
-            if len(cellphones) > 0:
-                cellphones_num += 1
-            else:
-                cellphones_num = 0
+        if len(cellphones) > 0:
+            self.cellphone_count += 1
+            self.cellphone_discontinue = 0
+        elif self.cellphone_count > 0:
+            self.cellphone_discontinue += 1
 
-            if len(books) > 0:
-                book_num += 1
-            else:
-                book_num = 0
+        if self.cellphone_discontinue == cellphone_discontinue_max:
+            self.cellphone_count = 0
+            self.cellphone_discontinue = 0
 
-            if len(monitors) > 1:
-                multiple_monitors_num += 1
-            else:
-                multiple_monitors_num = 0
+        if len(books) > 1:
+            self.book_count += 1
+            self.book_discontinue = 0
+        elif self.book_count > 0:
+            self.book_discontinue += 1
 
-            if multiple_person_num == multiple_person_max:
-                __message_callback('multiple person detected')
+        if self.book_discontinue == book_discontinue_max:
+            self.book_count = 0
+            self.book_discontinue = 0
 
-            if no_person_num == no_person_max:
-                __message_callback('exam taker left')
+        if self.no_person_count == no_person_max:
+            self.message_callback('Exam taker left')
+            # save_image(frame, persons, 'Exam taker left')
+            self.no_person_count += 1
 
-            if multiple_monitors_num == multiple_monitors_max:
-                __message_callback('multiple monitors detected')
+        if self.multi_person_count == multi_person_max:
+            self.message_callback('multiple people detected')
+            # save_image(frame, persons, 'multiple people detected')
+            self.multi_person_count += 1
 
-            if book_num == book_max:
-                __message_callback('books detected')
+        if self.multi_monitor_count == multi_monitor_max:
+            self.message_callback('multiple PC monitors/laptops detected')
+            # save_image(frame, monitors, 'multiple PC monitors/laptops detected')
+            self.multi_monitor_count += 1
 
-            if cellphones_num == cellphones_max:
-                __message_callback('cellphones detected')
-        print('inference stop')
-    except Exception as ex:
-        # client.publish(topic=iot_topic, payload='Error in object detection lambda: {}'.format(ex))
-        print('Error in object detection lambda: {}'.format(ex))
+        if self.cellphone_count == cellphone_max:
+            self.message_callback('cellphone detected')
+            # save_image(frame, cellphones, 'cellphone detected')
+            self.cellphone_count += 1
+
+        if self.book_count == book_max:
+            self.message_callback('book detected')
+            # save_image(frame, books, 'book detected')
+            self.book_count += 1
+
+    def join(self, timeout=None):
+        self.stop_request.set()
+        super().join(timeout)
 
 
 if __name__ == '__main__':
-    infinite_infer_run()
+    worker = InferenceWorker()
+    worker.start()
+    input()
