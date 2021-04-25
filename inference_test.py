@@ -7,6 +7,7 @@ import awscam
 import cv2
 import time
 from datetime import datetime
+from video_reader import VideoWorker
 
 
 class LocalDisplay(Thread):
@@ -91,9 +92,9 @@ BOOK_THRESHOLD = 0.4
 # Also, the number of frames where the previously detected situation discontinues, when the count exceeds
 # a limit, we regard the previous situation as ended
 no_person_num = 0
-no_person_max = 10
+no_person_max = 30
 no_person_discontinue = 0
-no_person_discontinue_max = 10
+no_person_discontinue_max = 30
 multi_person_num = 0
 multi_person_max = 20
 multi_person_discontinue = 0
@@ -105,11 +106,11 @@ multi_monitor_discontinue_max = 10
 cellphone_num = 0
 cellphone_max = 3
 cellphone_discontinue = 0
-cellphone_discontinue_max = 10
+cellphone_discontinue_max = 30
 book_num = 0
 book_max = 3
 book_discontinue = 0
-book_discontinue_max = 10
+book_discontinue_max = 30
 
 
 def save_image(frame, boxes, text):
@@ -148,6 +149,9 @@ def infinite_infer_run():
         # file that the image can be rendered locally.
         local_display = LocalDisplay('480p')
         local_display.start()
+
+        video_worker = VideoWorker()
+        track = video_worker.get_track(buffer_size=1)
         # The sample projects come with optimized artifacts, hence only the artifact
         # path is required.
         model_path = '/home/aws_cam/public/ssd_mobilenet_v2_coco/FP16/ssd_mobilenet_v2_coco.xml'
@@ -162,9 +166,9 @@ def infinite_infer_run():
         # Do inference until the lambda is killed.
         while True:
             # Get a frame from the video stream
-            ret, frame = awscam.getLastFrame()
-            if not ret:
-                raise Exception('Failed to get frame from the stream')
+            frame = track.recv_inference()
+            if frame is None:
+                continue
             # Resize frame to the same size as the training set.
             start = time.time()
             frame_resize = cv2.resize(frame, (input_height, input_width))

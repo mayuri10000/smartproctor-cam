@@ -7,7 +7,7 @@ import platform
 import ssl
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from video_reader import DeepLensVideoTrack, VideoWorker
+from video_reader import VideoWorker
 
 ROOT = os.path.dirname(__file__)
 
@@ -41,7 +41,7 @@ async def offer(request):
     await pc.setRemoteDescription(offer)
     for t in pc.getTransceivers():
         if t.kind == "video":
-            pc.addTrack(DeepLensVideoTrack(video_worker))
+            pc.addTrack(video_worker.get_track())
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     return web.Response(

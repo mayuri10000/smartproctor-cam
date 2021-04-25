@@ -7,7 +7,7 @@ import awscam
 import cv2
 import time
 
-from video_reader import VideoWorker
+from video_reader import VideoWorker, _DeepLensVideoTrack
 
 
 # The model used in the project is pre-trained with the COCO dataset
@@ -50,7 +50,7 @@ input_width = 300
 
 class InferenceWorker(Thread):
     """ Worker thread that do the object detection inference."""
-    def __init__(self, video_worker: VideoWorker, message_callback=print):
+    def __init__(self, video_track: _DeepLensVideoTrack, message_callback=print):
         super().__init__()
         self.no_person_count = 0
         self.no_person_discontinue = 0
@@ -63,7 +63,7 @@ class InferenceWorker(Thread):
         self.book_count = 0
         self.book_discontinue = 0
         self.model = None
-        self.video_worker = video_worker
+        self.video_track = video_track
         self.stop_request = Event()
         self.message_callback = message_callback
         self.yscale = 0
@@ -72,14 +72,11 @@ class InferenceWorker(Thread):
     def run(self):
         # Load the optimized object detection model
         self.model = awscam.Model(model_path, {'GPU': 1})
-        # Start the video worker if not started
-        if not self.video_worker.is_alive():
-            self.video_worker.start()
         while not self.stop_request.isSet():
             # We do not use awscam.getLastFrame since having multiple consumer of the video FIFO
             # will make the video output corrupt. Should share the same VideoWorker instance
             # with the WebRTC media track
-            frame = self.video_worker.get_frame()
+            frame = self.video_track.recv_inference()
             if frame is None:
                 continue
 
@@ -194,6 +191,7 @@ class InferenceWorker(Thread):
 
 
 if __name__ == '__main__':
-    worker = InferenceWorker(VideoWorker())
+    video_worker = VideoWorker()
+    worker = InferenceWorker(video_worker.get_track())
     worker.start()
     input()
