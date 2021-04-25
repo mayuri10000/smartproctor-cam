@@ -7,8 +7,8 @@ from aiortc import RTCSessionDescription
 from aiortc.rtcicetransport import *
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 
-from video_reader import DeepLensVideoTrack
-from inference import infinite_infer_run, set_message_callback, stop_inference
+from video_reader import DeepLensVideoTrack, VideoWorker
+from inference import InferenceWorker
 
 
 proctor_connections = {}
@@ -23,7 +23,8 @@ hub_url = f"wss://{server_name}/hub"
 auth_cookie = None
 exam_id = 0
 
-inference_thread = None
+inference_worker = None
+video_worker = None
 
 
 def send_detect_event(message):
@@ -42,7 +43,6 @@ async def upload_detection_image(data):
 
 async def login(token, eid):
     global auth_cookie, exam_id
-    params = {'token': token}
     res = await http_session.get(f"https://{server_name}/api/user/DeepLensLogin/" + token, verify_ssl=False)
     o = json.loads(await res.text())
     if o['code'] != 0:
@@ -54,10 +54,14 @@ async def login(token, eid):
 
 
 def init_inference():
-    global inference_thread
-    set_message_callback(send_detect_event)
-    inference_thread = threading.Thread(target=infinite_infer_run)
-    inference_thread.start()
+    global inference_worker, video_worker
+    if inference_worker is not None and inference_worker.is_alive():
+        inference_worker.join()
+    if video_worker is not None and video_worker.is_alive():
+        video_worker.join()
+    video_worker = VideoWorker()
+    inference_worker = InferenceWorker(video_worker, message_callback=send_detect_event)
+    inference_worker.start()
 
 
 async def init_signalr():
@@ -120,16 +124,15 @@ async def init_webrtc(proctors):
         for key in proctor_connections:
             await proctor_connections[key].close()
         proctor_connections = {}
-    stop_inference()
 
-    test_taker_connection.addTrack(DeepLensVideoTrack())
+    test_taker_connection.addTrack(DeepLensVideoTrack(video_worker))
     taker_sdp = await test_taker_connection.createOffer()
     signalr_conn.send("CameraOfferToTaker", [taker_sdp])
     await test_taker_connection.setLocalDescription(taker_sdp)
 
     for proctor in proctors:
         conn = aiortc.RTCPeerConnection()
-        conn.addTrack(DeepLensVideoTrack())
+        conn.addTrack(DeepLensVideoTrack(video_worker))
         proctor_connections[proctor['id']] = conn
         sdp = await conn.createOffer()
         signalr_conn.send("CameraOfferToProctor", [proctor['id'], sdp])
@@ -141,9 +144,9 @@ async def init_exam():
     o = json.loads(await res.text())
     if o['code'] == 0:
         proctors = o['proctors']
+        init_inference()
         await init_signalr()
         await init_webrtc(proctors)
-        init_inference()
 
 
 def shutdown():
@@ -151,5 +154,6 @@ def shutdown():
     for proctor in proctor_connections.keys():
         proctor_connections[proctor].close()
 
-    stop_inference()
+    inference_worker.join()
+    video_worker.join()
     signalr_conn.stop()

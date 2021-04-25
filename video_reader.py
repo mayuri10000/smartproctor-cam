@@ -20,7 +20,7 @@ from aiortc.contrib.media import MediaRelay
 # on AWS DeepLens, which is used for AWS DeepLens' video streaming server
 video_release_timeout = 0.1
 live_stream_src = '/opt/awscam/out/ch1_out.h264'
-max_buffer_size = 2
+max_buffer_size = 5
 proj_stream_src = '/tmp/results.mjpeg'
 stream_timeout = 1
 
@@ -28,31 +28,12 @@ VIDEO_TIME_BASE = fractions.Fraction(1, 120000)
 MXUVC_BIN = "/opt/awscam/camera/installed/bin/mxuvc"
 
 
-def __set_camera_prop(fps, resolution):
-    """ Helper method that sets the cameras frame rate and resolution. Used
-        predominantly by the h264 video stream, should not be called if user
-        is using KVS.
-        fps - Desired framerate
-        resolution - Tuple of (width, height) for desired resolution, accepted
-                     values in RESOLUTION.
-    """
-    os.system("{} --ch 1 framerate {}".format(MXUVC_BIN, fps))
-    os.system("{} --ch 1 resolution {} {}".format(MXUVC_BIN, resolution[0], resolution[1]))
 
-
-__video_worker_instance = None
-
-
-def get_video_worker():
-    global __video_worker_instance
-    if __video_worker_instance is None:
-        __video_worker_instance = __VideoWorker()
-    return __video_worker_instance
-
-
-# Worker thread used to read frames from the AWS DeepLens hardware
-# Inspired by /opt/awscam/awsmedia/video_server.py on AWS DeepLens
-class __VideoWorker(Thread):
+class VideoWorker(Thread):
+    """ Worker thread used to read frames from the AWS DeepLens hardware.
+        Inspired by /opt/awscam/awsmedia/video_server.py on AWS DeepLens.
+        This class should have only one frame for a single session, then
+        it should be re-initialized"""
     def __init__(self):
         super().__init__()
         self.frame_queue = queue.Queue(max_buffer_size)
@@ -66,6 +47,9 @@ class __VideoWorker(Thread):
             ret, frame = video_capture.read()
             try:
                 if ret:
+                    # Resize the frame to 480p to increase performance
+                    # since when using raw 1080p frames, framerate will be low
+                    frame = cv2.resize(frame, (858, 480))
                     self.frame_queue.put_nowait(frame)
             except queue.Full:
                 continue
@@ -83,12 +67,13 @@ class __VideoWorker(Thread):
 
 
 class DeepLensVideoTrack(MediaStreamTrack):
+    """"""
     kind = "video"
 
-    def __init__(self):
+    def __init__(self, video_worker: VideoWorker):
         super().__init__()
         self._start = None
-        self._worker = get_video_worker()
+        self._worker = video_worker
 
     async def recv(self):
         if self.readyState != "live":
@@ -105,7 +90,7 @@ class DeepLensVideoTrack(MediaStreamTrack):
         frame_nd = self._worker.get_frame()
         if frame_nd is None:
             # No frame is available, return a green image.
-            frame = VideoFrame(width=1920, height=1080)
+            frame = VideoFrame(width=858, height=480)
         else:
             frame = VideoFrame.from_ndarray(frame_nd, format="bgr24")
 
