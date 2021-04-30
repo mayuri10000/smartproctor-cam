@@ -1,13 +1,6 @@
-import math
 from threading import Thread, Event
-import os
-import json
-import numpy as np
 import awscam
 import cv2
-import time
-
-from video_reader import VideoWorker, _DeepLensVideoTrack
 
 
 # The model used in the project is pre-trained with the COCO dataset
@@ -50,7 +43,7 @@ input_width = 300
 
 class InferenceWorker(Thread):
     """ Worker thread that do the object detection inference."""
-    def __init__(self, video_track: _DeepLensVideoTrack, message_callback=print):
+    def __init__(self, message_callback=None):
         super().__init__()
         self.no_person_count = 0
         self.no_person_discontinue = 0
@@ -63,7 +56,6 @@ class InferenceWorker(Thread):
         self.book_count = 0
         self.book_discontinue = 0
         self.model = None
-        self.video_track = video_track
         self.stop_request = Event()
         self.message_callback = message_callback
         self.yscale = 0
@@ -73,11 +65,8 @@ class InferenceWorker(Thread):
         # Load the optimized object detection model
         self.model = awscam.Model(model_path, {'GPU': 1})
         while not self.stop_request.isSet():
-            # We do not use awscam.getLastFrame since having multiple consumer of the video FIFO
-            # will make the video output corrupt. Should share the same VideoWorker instance
-            # with the WebRTC media track
-            frame = self.video_track.recv_inference()
-            if frame is None:
+            res, frame = awscam.getLastFrame()
+            if not res:
                 continue
 
             frame_resize = cv2.resize(frame, (input_height, input_width))
@@ -86,9 +75,28 @@ class InferenceWorker(Thread):
             result = self.model.parseResult(model_type, self.model.doInference(frame_resize))
             self.yscale = float(frame.shape[0]) / float(input_height)
             self.xscale = float(frame.shape[1]) / float(input_width)
-            self.process_result(result)
+            self.process_result(result, frame)
 
-    def process_result(self, result):
+    def mark_frame(self, frame, boxes, text):
+        cv2.putText(frame, text, (0, 60), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
+        for box in boxes:
+            xmin, xmax, ymin, ymax, score = box
+            # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+            # for more information about the cv2.rectangle method.
+            # Method signature: image, point1, point2, color, and tickness.
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 0, 255), 10)
+            # Amount to offset the label/probability text above the bounding box.
+            text_offset = 15
+            # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+            # for more information about the cv2.putText method.
+            # Method signature: image, text, origin, font face, font scale, color,
+            # and tickness
+            cv2.putText(frame, "{:.2f}%".format(score * 100),
+                        (xmin, ymin - text_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
+        return cv2.imencode('.jpg', frame)[1].tobytes()
+
+    def process_result(self, result, frame):
         persons = []
         monitors = []
         cellphones = []
@@ -161,28 +169,23 @@ class InferenceWorker(Thread):
             self.book_discontinue = 0
 
         if self.no_person_count == no_person_max:
-            self.message_callback('Exam taker left')
-            # save_image(frame, persons, 'Exam taker left')
+            self.message_callback('Exam taker left', self.mark_frame(frame, [], 'Exam taker left'))
             self.no_person_count += 1
 
         if self.multi_person_count == multi_person_max:
-            self.message_callback('multiple people detected')
-            # save_image(frame, persons, 'multiple people detected')
+            self.message_callback('multiple people detected', self.mark_frame(frame, persons, 'multiple people detected'))
             self.multi_person_count += 1
 
         if self.multi_monitor_count == multi_monitor_max:
-            self.message_callback('multiple PC monitors/laptops detected')
-            # save_image(frame, monitors, 'multiple PC monitors/laptops detected')
+            self.message_callback('multiple PC monitors/laptops detected', self.mark_frame(frame, monitors, 'multiple PC monitors/laptops detected'))
             self.multi_monitor_count += 1
 
         if self.cellphone_count == cellphone_max:
-            self.message_callback('cellphone detected')
-            # save_image(frame, cellphones, 'cellphone detected')
+            self.message_callback('cellphone detected', self.mark_frame(frame, cellphones, 'cellphone detected'))
             self.cellphone_count += 1
 
         if self.book_count == book_max:
-            self.message_callback('book detected')
-            # save_image(frame, books, 'book detected')
+            self.message_callback('book detected', self.mark_frame(frame, books, 'book detected'))
             self.book_count += 1
 
     def join(self, timeout=None):
@@ -191,7 +194,6 @@ class InferenceWorker(Thread):
 
 
 if __name__ == '__main__':
-    video_worker = VideoWorker()
-    worker = InferenceWorker(video_worker.get_track())
+    worker = InferenceWorker()
     worker.start()
     input()

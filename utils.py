@@ -65,6 +65,13 @@ def is_network_inactive(ssid):
         return False
 
 
+def get_ip():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect(('114.114.114.114', 80))
+    return s.getsockname()[0]
+
+
 def get_network_status():
     """Get the current network status of the device"""
 
@@ -82,6 +89,7 @@ def get_network_status():
         if words[1].find('ethernet') > -1:
             status['ethernet'] = True
 
+    status['ip'] = get_ip()
     return status
 
 

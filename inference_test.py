@@ -1,4 +1,4 @@
-""" A sample lambda for object detection"""
+""" Tests SmartProctor's cheat detection algorithm. This can be run as an AWS Lambda """
 from threading import Thread, Event
 import os
 import json
@@ -6,8 +6,6 @@ import numpy as np
 import awscam
 import cv2
 import time
-from datetime import datetime
-from video_reader import VideoWorker
 
 
 class LocalDisplay(Thread):
@@ -46,7 +44,7 @@ class LocalDisplay(Thread):
         if not os.path.exists(result_path):
             os.mkfifo(result_path)
         # This call will block until a consumer is available
-        with open(result_path, 'w') as fifo_file:
+        with open(result_path, 'wb') as fifo_file:
             while not self.stop_request.isSet():
                 try:
                     # Write the data to the FIFO file. This call will block
@@ -113,27 +111,6 @@ book_discontinue = 0
 book_discontinue_max = 30
 
 
-def save_image(frame, boxes, text):
-    cv2.putText(frame, text, (0, 60), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
-    cv2.putText(frame, str(datetime.now()), (0, 130), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
-    for box in boxes:
-        xmin, xmax, ymin, ymax, score = box
-        # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
-        # for more information about the cv2.rectangle method.
-        # Method signature: image, point1, point2, color, and tickness.
-        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 0, 255), 10)
-        # Amount to offset the label/probability text above the bounding box.
-        text_offset = 15
-        # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
-        # for more information about the cv2.putText method.
-        # Method signature: image, text, origin, font face, font scale, color,
-        # and tickness
-        cv2.putText(frame, "{:.2f}%".format(score * 100),
-                    (xmin, ymin - text_offset),
-                    cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
-    cv2.imwrite('/home/aws_cam/detection/' + str(int(time.time())) + ".jpg", frame)
-
-
 def infinite_infer_run():
     global no_person_num, no_person_discontinue, multi_person_num, \
         multi_person_discontinue, cellphone_num, cellphone_discontinue, \
@@ -150,8 +127,6 @@ def infinite_infer_run():
         local_display = LocalDisplay('480p')
         local_display.start()
 
-        video_worker = VideoWorker()
-        track = video_worker.get_track(buffer_size=1)
         # The sample projects come with optimized artifacts, hence only the artifact
         # path is required.
         model_path = '/home/aws_cam/public/ssd_mobilenet_v2_coco/FP16/ssd_mobilenet_v2_coco.xml'
@@ -166,11 +141,10 @@ def infinite_infer_run():
         # Do inference until the lambda is killed.
         while True:
             # Get a frame from the video stream
-            frame = track.recv_inference()
-            if frame is None:
-                continue
+            ret, frame = awscam.getLastFrame()
+            if not ret:
+                raise Exception('Failed to get frame from the stream')
             # Resize frame to the same size as the training set.
-            start = time.time()
             frame_resize = cv2.resize(frame, (input_height, input_width))
             # Run the images through the inference engine and parse the results using
             # the parser API, note it is possible to get the output of doInference
@@ -188,6 +162,9 @@ def infinite_infer_run():
             monitors = []
             cellphones = []
             books = []
+
+            draw_objects = []
+            display_text = []
             # Get the detected objects and probabilities
             for obj in parsed_inference_results[model_type]:
                 # Add bounding boxes to full resolution frame
@@ -255,33 +232,53 @@ def infinite_infer_run():
                 book_num = 0
                 book_discontinue = 0
 
-            if no_person_num == no_person_max:
-                print('Exam taker left')
-                save_image(frame, persons, 'Exam taker left')
-                no_person_num += 1
+            draw_objects.extend(persons)
+            if no_person_num >= no_person_max:
+                display_text.append('Exam taker left')
 
-            if multi_person_num == multi_person_max:
-                print('multiple people detected')
-                save_image(frame, persons, 'multiple people detected')
-                multi_person_num += 1
+            if multi_person_num >= multi_person_max:
+                display_text.append('multiple people detected')
 
-            if multi_monitor_num == multi_monitor_max:
-                print('multiple PC monitors/laptops detected')
-                save_image(frame, monitors, 'multiple PC monitors/laptops detected')
-                multi_monitor_num += 1
+            if multi_monitor_num >= multi_monitor_max:
+                display_text.append('multiple PC monitors/laptops detected')
+                draw_objects.extend(monitors)
 
-            if cellphone_num == cellphone_max:
-                print('cellphone detected')
-                save_image(frame, cellphones, 'cellphone detected')
-                cellphone_num += 1
+            if cellphone_num >= cellphone_max:
+                display_text.append('cellphone detected')
+                draw_objects.extend(cellphones)
 
-            if book_num == book_max:
-                print('book detected')
-                save_image(frame, books, 'book detected')
-                book_num += 1
+            if book_num >= book_max:
+                display_text.append('book detected')
+                draw_objects.extend(books)
+
+            if len(display_text) > 0:
+                position = 0
+                for text in display_text:
+                    position += 60
+                    cv2.putText(frame, text, (0, position), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
+            else:
+                cv2.putText(frame, 'No problem detected', (0, 60), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 255, 0), 6)
+            draw_color = (0, 0, 255) if len(display_text) > 0 else (0, 255, 0)
+            for box in draw_objects:
+                xmin, xmax, ymin, ymax, score = box
+                # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+                # for more information about the cv2.rectangle method.
+                # Method signature: image, point1, point2, color, and tickness.
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), draw_color, 10)
+                # Amount to offset the label/probability text above the bounding box.
+                text_offset = 15
+                # See https://docs.opencv.org/3.4.1/d6/d6e/group__imgproc__draw.html
+                # for more information about the cv2.putText method.
+                # Method signature: image, text, origin, font face, font scale, color,
+                # and tickness
+                cv2.putText(frame, "{:.2f}%".format(score * 100),
+                            (xmin, ymin - text_offset),
+                            cv2.FONT_HERSHEY_SIMPLEX, 2.5, draw_color, 6)
+            # Set the next frame in the local display stream.
+            local_display.set_frame_data(frame)
+
     except Exception as ex:
         print('Error in object detection lambda: {}'.format(ex))
 
 
-if __name__ == '__main__':
-    infinite_infer_run()
+infinite_infer_run()

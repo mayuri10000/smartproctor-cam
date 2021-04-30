@@ -13,7 +13,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
 
-import local_server
+import app
 
-local_server.start()
+app.start()
 
