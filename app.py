@@ -27,13 +27,13 @@ class SmartProctorApp:
         self.video_worker = VideoWorker()
         self.inference_worker = InferenceWorker()
         self.app = Flask("smartproctor-cam")
-        self.app.add_url_rule('/sn', self.get_serial, methods=['GET'])
-        self.app.add_url_rule("/login_and_start_exam", self.login_and_start_exam, methods=['POST'])
-        self.app.add_url_rule('/stop_exam', self.stop_exam, methods=['GET'])
-        self.app.add_url_rule('/network_status', self.network_status, methods=['GET'])
-        self.app.add_url_rule('/connect_wifi', self.connect_wifi, methods=['POST'])
-        self.app.add_url_rule('/wifi_ssids', self.ssids, methods=['GET'])
-        self.app.add_url_rule('/video_stream', self.video_stream, method=['GET'])
+        self.app.add_url_rule('/sn', 'sn', self.get_serial, methods=['GET'])
+        self.app.add_url_rule("/login_and_start_exam", 'login_and_start_exam', self.login_and_start_exam, methods=['POST'])
+        self.app.add_url_rule('/stop_exam', 'stop_exam', self.stop_exam, methods=['GET'])
+        self.app.add_url_rule('/network_status', 'network_status', self.network_status, methods=['GET'])
+        self.app.add_url_rule('/connect_wifi', 'connect_wifi', self.connect_wifi, methods=['POST'])
+        self.app.add_url_rule('/wifi_ssids', 'wifi_ssids', self.ssids, methods=['GET'])
+        self.app.add_url_rule('/video_stream', 'video_stream', self.video_stream, methods=['GET'])
         self.app.after_request(self.add_cors_header)
 
     def run_server(self, port=8080):
@@ -60,21 +60,22 @@ class SmartProctorApp:
     def __upload_frame(self, frame):
         try:
             files = {'file': ('detection.jpg', frame, 'image/jpeg')}
-            res = requests.post(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/UploadEventAttachment", files=files)
+            res = requests.post(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/UploadEventAttachment", files=files, verify=False)
             o = res.json()
             return o['fileName']
         except:
             return None
 
     def __inference_message_callback(self, message, frame):
-        file_name = self.__upload_frame(frame)
-        res = requests.post(f'{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/SendEvent', data=jsonify({
-            'examId': self.exam_id,
-            'type': 1,
-            'receipt': None,
-            'message': message,
-            'attachment': file_name
-        }))
+        with self.app.app_context():
+            file_name = self.__upload_frame(frame)
+            res = requests.post(f'{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/SendEvent', data=jsonify({
+                'examId': self.exam_id,
+                'type': 1,
+                'receipt': None,
+                'message': message,
+                'attachment': file_name
+            }), verify=False)
 
     def login_and_start_exam(self):
         try:
@@ -83,14 +84,14 @@ class SmartProctorApp:
             o = res.json()
             if o['code'] == 0:
                 self.exam_id = params['examId']
-                if self.video_worker is not None and self.video_worker.is_alive():
-                    self.video_worker.join()
                 if self.inference_worker is not None and self.inference_worker.is_alive():
                     self.inference_worker.join()
 
-                self.video_worker = VideoWorker()
+                if self.video_worker is None or not self.video_worker.is_alive():
+                    self.video_worker = VideoWorker()
+                    self.video_worker.start()
+
                 self.inference_worker = InferenceWorker(self.__inference_message_callback)
-                self.video_worker.start()
                 self.inference_worker.start()
             return jsonify({"success": o['code'] == 0})
         except Exception as e:
@@ -112,6 +113,10 @@ class SmartProctorApp:
                    + self.video_worker.get_frame() + b'\r\n')
 
     def video_stream(self):
+        if self.video_worker is None or not self.video_worker.is_alive():
+            self.video_worker = VideoWorker()
+            self.video_worker.start()
+
         return Response(self.__gen_video_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
