@@ -1,7 +1,8 @@
 from threading import Thread, Event
 import awscam
 import cv2
-
+import requests
+import json
 
 # The model used in the project is pre-trained with the COCO dataset
 # The labels in the COCO dataset can be found in
@@ -35,15 +36,19 @@ book_max = 3
 book_discontinue_max = 10
 
 # The path to the optimized model, should be in /opt/awscam/artifacts/ when deployed
-model_path = '/home/aws_cam/public/ssd_mobilenet_v2_coco/FP16/ssd_mobilenet_v2_coco.xml'
+model_path = 'Model/ssd_mobilenet_v2_coco.xml'
 model_type = 'ssd'
 input_height = 300
 input_width = 300
 
+# Server address, should be changed to DNS name if deployed
+SERVER_ADDR = "10.28.140.146:5001"
+SERVER_PROTOCOL = 'https'
+
 
 class InferenceWorker(Thread):
     """ Worker thread that do the object detection inference."""
-    def __init__(self, message_callback=None):
+    def __init__(self, exam_id, allow_books, auth_cookie):
         super().__init__()
         self.no_person_count = 0
         self.no_person_discontinue = 0
@@ -57,7 +62,9 @@ class InferenceWorker(Thread):
         self.book_discontinue = 0
         self.model = None
         self.stop_request = Event()
-        self.message_callback = message_callback
+        self.exam_id = exam_id
+        self.allow_books = allow_books
+        self.auth_cookie = auth_cookie
         self.yscale = 0
         self.xscale = 0
 
@@ -76,6 +83,26 @@ class InferenceWorker(Thread):
             self.yscale = float(frame.shape[0]) / float(input_height)
             self.xscale = float(frame.shape[1]) / float(input_width)
             self.process_result(result, frame)
+
+    def __upload_frame(self, frame):
+        try:
+            files = {'file': ('detection.jpg', frame, 'image/jpeg')}
+            res = requests.post(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/UploadEventAttachment", files=files,
+                                headers={'Cookie': self.auth_cookie}, verify=False)
+            o = res.json()
+            return o['fileName']
+        except:
+            return None
+
+    def __send_event_with_frame(self, message, frame):
+        file_name = self.__upload_frame(frame)
+        res = requests.post(f'{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/SendEvent', json={
+            'examId': self.exam_id,
+            'type': 1,
+            'receipt': None,
+            'message': message,
+            'attachment': file_name
+        }, headers={'Cookie': self.auth_cookie}, verify=False)
 
     def mark_frame(self, frame, boxes, text):
         cv2.putText(frame, text, (0, 60), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
@@ -158,7 +185,7 @@ class InferenceWorker(Thread):
             self.cellphone_count = 0
             self.cellphone_discontinue = 0
 
-        if len(books) > 1:
+        if len(books) > 1 and not self.allow_books:
             self.book_count += 1
             self.book_discontinue = 0
         elif self.book_count > 0:
@@ -169,31 +196,25 @@ class InferenceWorker(Thread):
             self.book_discontinue = 0
 
         if self.no_person_count == no_person_max:
-            self.message_callback('Exam taker left', self.mark_frame(frame, [], 'Exam taker left'))
+            self.__send_event_with_frame('Exam taker left', self.mark_frame(frame, [], 'Exam taker left'))
             self.no_person_count += 1
 
         if self.multi_person_count == multi_person_max:
-            self.message_callback('multiple people detected', self.mark_frame(frame, persons, 'multiple people detected'))
+            self.__send_event_with_frame('multiple people detected', self.mark_frame(frame, persons, 'multiple people detected'))
             self.multi_person_count += 1
 
         if self.multi_monitor_count == multi_monitor_max:
-            self.message_callback('multiple PC monitors/laptops detected', self.mark_frame(frame, monitors, 'multiple PC monitors/laptops detected'))
+            self.__send_event_with_frame('multiple PC monitors/laptops detected', self.mark_frame(frame, monitors, 'multiple PC monitors/laptops detected'))
             self.multi_monitor_count += 1
 
         if self.cellphone_count == cellphone_max:
-            self.message_callback('cellphone detected', self.mark_frame(frame, cellphones, 'cellphone detected'))
+            self.__send_event_with_frame('cellphone detected', self.mark_frame(frame, cellphones, 'cellphone detected'))
             self.cellphone_count += 1
 
         if self.book_count == book_max:
-            self.message_callback('book detected', self.mark_frame(frame, books, 'book detected'))
+            self.__send_event_with_frame('book detected', self.mark_frame(frame, books, 'book detected'))
             self.book_count += 1
 
     def join(self, timeout=None):
         self.stop_request.set()
         super().join(timeout)
-
-
-if __name__ == '__main__':
-    worker = InferenceWorker()
-    worker.start()
-    input()

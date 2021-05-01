@@ -1,20 +1,14 @@
-import json
 import os
-import ssl
 
 import requests
-
 from flask import Flask, Response, render_template, jsonify, request
 
 import utils
 from video_reader import VideoWorker
 from inference import InferenceWorker
 
-from aiohttp import web
 
-ROOT = os.path.dirname(__file__)
-CERT_DIR = 'certs/'
-
+# Server address, should be changed to DNS name if deployed
 SERVER_ADDR = "10.28.140.146:5001"
 SERVER_PROTOCOL = 'https'
 
@@ -24,8 +18,8 @@ class SmartProctorApp:
      interact with the edge computing client """
     def __init__(self):
         self.exam_id = 0
-        self.video_worker = VideoWorker()
-        self.inference_worker = InferenceWorker()
+        self.video_worker = None
+        self.inference_worker = None
         self.app = Flask("smartproctor-cam")
         self.app.add_url_rule('/sn', 'sn', self.get_serial, methods=['GET'])
         self.app.add_url_rule("/login_and_start_exam", 'login_and_start_exam', self.login_and_start_exam, methods=['POST'])
@@ -57,26 +51,6 @@ class SmartProctorApp:
     def network_status(self):
         return jsonify(utils.get_network_status())
 
-    def __upload_frame(self, frame):
-        try:
-            files = {'file': ('detection.jpg', frame, 'image/jpeg')}
-            res = requests.post(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/UploadEventAttachment", files=files, verify=False)
-            o = res.json()
-            return o['fileName']
-        except:
-            return None
-
-    def __inference_message_callback(self, message, frame):
-        with self.app.app_context():
-            file_name = self.__upload_frame(frame)
-            res = requests.post(f'{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/SendEvent', data=jsonify({
-                'examId': self.exam_id,
-                'type': 1,
-                'receipt': None,
-                'message': message,
-                'attachment': file_name
-            }), verify=False)
-
     def login_and_start_exam(self):
         try:
             params = request.get_json()
@@ -91,11 +65,15 @@ class SmartProctorApp:
                     self.video_worker = VideoWorker()
                     self.video_worker.start()
 
-                self.inference_worker = InferenceWorker(self.__inference_message_callback)
+                cookie = res.headers['Set-Cookie']
+                exam_details = requests.get(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/ExamDetails/" + str(params['examId']),
+                                            verify=False).json()
+
+                self.inference_worker = InferenceWorker(self.exam_id, exam_details['openBook'], cookie)
                 self.inference_worker.start()
             return jsonify({"success": o['code'] == 0})
         except Exception as e:
-            print(e)
+            print(str(e))
             return jsonify({"success": False})
 
     def stop_exam(self):
@@ -121,5 +99,7 @@ class SmartProctorApp:
 
 
 if __name__ == '__main__':
+    # Allows the port used by the server
+    os.system("iptables -A INPUT -p tcp --dport 8080 -j ACCEPT")
     app = SmartProctorApp()
     app.run_server()

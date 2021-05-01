@@ -68,7 +68,10 @@ def is_network_inactive(ssid):
 def get_ip():
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect(('114.114.114.114', 80))
+    try:
+        s.connect(('114.114.114.114', 80))
+    except:
+        pass
     return s.getsockname()[0]
 
 
