@@ -34,41 +34,53 @@ class SmartProctorApp:
         self.app.run(host='0.0.0.0', port=port, threaded=True)
 
     def add_cors_header(self, response):
+        """ Adds CORS headers to the response, if no CORS header present, the server
+         cannot be accessed with the web client """
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-CSRF-Token, Cache-Control'
         return response
 
     def get_serial(self):
+        """ Gets the device's serial number """
         return jsonify({"serialNumber": utils.get_device_serial_number()})
 
     def ssids(self):
+        """ Gets a list of wifi SSIDs """
         return jsonify({'wifiList': utils.list_ssid()})
 
     def connect_wifi(self):
+        """ Connect to a specific WIFI hotspot with SSID and password """
         params = request.get_json()
         return jsonify({'success': utils.connect_wifi(params['ssid'], params['password'])})
 
     def network_status(self):
+        """ Get current network status, with IP address """
         return jsonify(utils.get_network_status())
 
     def login_and_start_exam(self):
+        """ Logs in to the SmartProctor's server and begin the exam """
         try:
             params = request.get_json()
+            # Log in to the server with the token from web client
             res = requests.get(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/user/DeepLensLogin/" + params['token'], verify=False)
             o = res.json()
             if o['code'] == 0:
                 self.exam_id = params['examId']
+                # Stop the inference worker thread if running
                 if self.inference_worker is not None and self.inference_worker.is_alive():
                     self.inference_worker.join()
 
+                # Start the video worker thread if not started
                 if self.video_worker is None or not self.video_worker.is_alive():
                     self.video_worker = VideoWorker()
                     self.video_worker.start()
 
+                # Obtains the auth cookie from the login response
                 cookie = res.headers['Set-Cookie']
                 exam_details = requests.get(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/ExamDetails/" + str(params['examId']),
                                             verify=False).json()
 
+                # Begin inference
                 self.inference_worker = InferenceWorker(self.exam_id, exam_details['openBook'], cookie)
                 self.inference_worker.start()
             return jsonify({"success": o['code'] == 0})
@@ -77,6 +89,7 @@ class SmartProctorApp:
             return jsonify({"success": False})
 
     def stop_exam(self):
+        """ Stop the exam, stop the worker therads """
         if self.video_worker is not None and self.video_worker.is_alive():
             self.video_worker.join()
         if self.inference_worker is not None and self.inference_worker.is_alive():
@@ -87,10 +100,13 @@ class SmartProctorApp:
 
     def __gen_video_stream(self):
         while True:
+            # Gets the camera frames from the video worker
             yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n'
                    + self.video_worker.get_frame() + b'\r\n')
 
     def video_stream(self):
+        """ Get the MJPEG video stream """
+        # Start the video worker thread if not started
         if self.video_worker is None or not self.video_worker.is_alive():
             self.video_worker = VideoWorker()
             self.video_worker.start()
@@ -98,6 +114,9 @@ class SmartProctorApp:
         return Response(self.__gen_video_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
+# This script should be run as root since it requires access to "iptables" and
+# "mxuvc". So this project cannot be deployed to the DeepLens with AWS console.
+# Instead, it should be manually installed.
 if __name__ == '__main__':
     # Allows the port used by the server
     os.system("iptables -A INPUT -p tcp --dport 8080 -j ACCEPT")

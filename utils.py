@@ -97,7 +97,7 @@ def get_network_status():
 
 
 def get_device_serial_number():
-    """Obtain last 4 letters of Device Serial Number (DSN)"""
+    """Obtain the Device Serial Number (DSN)"""
 
     (err, stdout) = execute('cat /sys/class/dmi/id/product_serial')
     return stdout.rstrip() if err == 0 else ''

@@ -60,6 +60,7 @@ class VideoWorker(Thread):
         video_capture.release()
 
     def get_frame(self):
+        """ Gets one JPEG video frame, a pure-black frame if the queue is empty """
         try:
             return self.frame_queue.get(timeout=stream_timeout).tobytes()
         except queue.Empty:
