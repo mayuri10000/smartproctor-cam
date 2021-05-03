@@ -39,8 +39,8 @@ class VideoWorker(Thread):
         Inspired by /opt/awscam/awsmedia/video_server.py on AWS DeepLens.
     """
     def __init__(self):
-        super().__init__()
-        self.frame_queue = queue.Queue(max_buffer_size)
+        super().__init__(daemon=True)
+        self.frame_queue = queue.Queue(maxsize=max_buffer_size)
         self.stop_request = Event()
         self.tracks = set()
 

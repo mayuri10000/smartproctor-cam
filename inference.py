@@ -44,6 +44,7 @@ input_width = 300
 # Server address, should be changed to DNS name if deployed
 SERVER_ADDR = "10.28.140.146:5001"
 SERVER_PROTOCOL = 'https'
+SERVER_URL = SERVER_PROTOCOL + '://' + SERVER_ADDR
 
 
 class InferenceWorker(Thread):
@@ -87,7 +88,7 @@ class InferenceWorker(Thread):
     def __upload_frame(self, frame):
         try:
             files = {'file': ('detection.jpg', frame, 'image/jpeg')}
-            res = requests.post(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/UploadEventAttachment", files=files,
+            res = requests.post(SERVER_URL + "/api/exam/UploadEventAttachment", files=files,
                                 headers={'Cookie': self.auth_cookie}, verify=False)
             o = res.json()
             return o['fileName']
@@ -96,7 +97,7 @@ class InferenceWorker(Thread):
 
     def __send_event_with_frame(self, message, frame):
         file_name = self.__upload_frame(frame)
-        res = requests.post(f'{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/SendEvent', json={
+        res = requests.post(SERVER_URL + '/api/exam/SendEvent', json={
             'examId': self.exam_id,
             'type': 1,
             'receipt': None,

@@ -11,6 +11,7 @@ from inference import InferenceWorker
 # Server address, should be changed to DNS name if deployed
 SERVER_ADDR = "10.28.140.146:5001"
 SERVER_PROTOCOL = 'https'
+SERVER_URL = SERVER_PROTOCOL + '://' + SERVER_ADDR
 
 
 class SmartProctorApp:
@@ -18,7 +19,7 @@ class SmartProctorApp:
      interact with the edge computing client """
     def __init__(self):
         self.exam_id = 0
-        self.video_worker = None
+        self.video_worker = VideoWorker()
         self.inference_worker = None
         self.app = Flask("smartproctor-cam")
         self.app.add_url_rule('/sn', 'sn', self.get_serial, methods=['GET'])
@@ -62,7 +63,7 @@ class SmartProctorApp:
         try:
             params = request.get_json()
             # Log in to the server with the token from web client
-            res = requests.get(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/user/DeepLensLogin/" + params['token'], verify=False)
+            res = requests.get(SERVER_URL + "/api/user/DeepLensLogin/" + params['token'], verify=False)
             o = res.json()
             if o['code'] == 0:
                 self.exam_id = params['examId']
@@ -77,15 +78,14 @@ class SmartProctorApp:
 
                 # Obtains the auth cookie from the login response
                 cookie = res.headers['Set-Cookie']
-                exam_details = requests.get(f"{SERVER_PROTOCOL}://{SERVER_ADDR}/api/exam/ExamDetails/" + str(params['examId']),
+                exam_details = requests.get(SERVER_URL + "/api/exam/ExamDetails/" + str(params['examId']),
                                             verify=False).json()
 
                 # Begin inference
                 self.inference_worker = InferenceWorker(self.exam_id, exam_details['openBook'], cookie)
                 self.inference_worker.start()
             return jsonify({"success": o['code'] == 0})
-        except Exception as e:
-            print(str(e))
+        except:
             return jsonify({"success": False})
 
     def stop_exam(self):
@@ -97,6 +97,7 @@ class SmartProctorApp:
 
         self.video_worker = None
         self.inference_worker = None
+        return jsonify({'success': True})
 
     def __gen_video_stream(self):
         while True:
