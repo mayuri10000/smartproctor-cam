@@ -36,14 +36,14 @@ book_max = 3
 book_discontinue_max = 10
 
 # The path to the optimized model, should be in /opt/awscam/artifacts/ when deployed
-model_path = 'Model/ssd_mobilenet_v2_coco.xml'
+model_path = '/opt/smartpoctor/Model/ssd_mobilenet_v2_coco.xml'
 model_type = 'ssd'
 input_height = 300
 input_width = 300
 
 # Server address, should be changed to DNS name if deployed
-SERVER_ADDR = "10.28.140.146:5001"
-SERVER_PROTOCOL = 'https'
+SERVER_ADDR = "10.28.140.146"
+SERVER_PROTOCOL = 'http'
 SERVER_URL = SERVER_PROTOCOL + '://' + SERVER_ADDR
 
 
