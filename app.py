@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import os
 
 import requests
@@ -9,8 +10,8 @@ from inference import InferenceWorker
 
 
 # Server address, should be changed to DNS name if deployed
-SERVER_ADDR = "10.28.140.146:5001"
-SERVER_PROTOCOL = 'https'
+SERVER_ADDR = "10.28.140.146"
+SERVER_PROTOCOL = 'http'
 SERVER_URL = SERVER_PROTOCOL + '://' + SERVER_ADDR
 
 
